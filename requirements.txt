@@ -83,6 +83,7 @@ safetensors==0.5.3
 scikit-learn==1.7.2
 scipy==1.15.3
 semantic-version==2.10.0
+setuptools==80.9.0
 shellingham==1.5.4
 shiboken6==6.11.1
 six==1.17.0
@@ -95,9 +96,9 @@ threadpoolctl==3.6.0
 tokenizers==0.22.2
 tomli==2.4.1
 tomlkit==0.13.3
-torch==2.5.1
-torchaudio==2.5.1
-torchvision==0.20.1
+torch==2.6.0
+torchaudio==2.6.0
+torchvision==0.21.0
 tqdm==4.68.2
 transformers==5.2.0
 typer==0.25.1

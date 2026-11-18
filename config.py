@@ -15,7 +15,8 @@ SETTINGS_FILE = os.path.join(SCRIPT_DIR, "settings.json")
 for d in [VOICES_DIR, OUTPUTS_DIR]:
     os.makedirs(d, exist_ok=True)
 
-MAX_TEXT_LEN      = 500
+MAX_TEXT_LEN      = 15_000
+MAX_CHUNK_LEN     = 500
 EMPTY_CACHE_EVERY = 20
 SUPPORTED_EXTS    = (".wav", ".mp3", ".flac", ".m4a")
 TARGET_SR         = 24000

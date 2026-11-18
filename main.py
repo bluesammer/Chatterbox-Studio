@@ -12,8 +12,10 @@ else:
 
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-CACHE_DIR = os.path.join(BASE_DIR, "system_models_cache")
-os.makedirs(CACHE_DIR, exist_ok=True)
+CACHE_DIR = os.environ.get("CHATTERBOX_MODEL_CACHE")
+if not CACHE_DIR:
+    CACHE_DIR = os.path.join(BASE_DIR, "system_models_cache")
+    os.makedirs(CACHE_DIR, exist_ok=True)
 
 os.environ["HF_HOME"] = CACHE_DIR
 os.environ["HUGGINGFACE_HUB_CACHE"] = CACHE_DIR

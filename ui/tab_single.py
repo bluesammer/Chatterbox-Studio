@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
 )
 from PySide6.QtCore import Qt, QTimer
+from config import MAX_TEXT_LEN
 from voice_manager import get_saved_voices
 from ui.components import CustomAudioPlayer, SettingsDialog, GenerationProgressBar
 from ui.workers import GenerationWorker
@@ -194,6 +195,9 @@ class SingleGenerationUI(QWidget):
             return
 
         if not text:
+            return
+        if len(text) > MAX_TEXT_LEN:
+            self.on_error(f"Text is too long ({len(text)}/{MAX_TEXT_LEN} characters).")
             return
 
         self.gen_btn.setEnabled(False)
