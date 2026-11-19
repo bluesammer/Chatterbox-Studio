@@ -1,6 +1,12 @@
 import os
+import re
 import time
+from threading import Lock
+
+import torch
+
 from config import (
+    MAX_CHUNK_LEN,
     MAX_TEXT_LEN,
     validate_safe_name,
     DEFAULT_SEED,
@@ -19,6 +25,90 @@ from audio_core import (
 from voice_manager import load_voice_audio
 from project_manager import project_dir, auto_save_project, render_table
 from hardware_monitor import get_hw_stats
+
+_SENTENCE_END = re.compile(
+    r"""[.!?…]+["'”’)\]]*(?=\s|$)|[。！？]+[」』”’）]*"""
+)
+_WHITESPACE = re.compile(r"\s+")
+_model_lock = Lock()
+
+
+def _split_text(text):
+    while len(text) > MAX_CHUNK_LEN:
+        # Include one lookahead character so a period at the limit can see
+        # the following space without treating a clipped word as a sentence.
+        window = text[: MAX_CHUNK_LEN + 1]
+        split_at = max(
+            (
+                match.end()
+                for match in _SENTENCE_END.finditer(window)
+                if match.end() <= MAX_CHUNK_LEN
+            ),
+            default=0,
+        )
+        if not split_at:
+            split_at = max(
+                (
+                    match.start()
+                    for match in _WHITESPACE.finditer(window)
+                    if match.start() > 0
+                ),
+                default=MAX_CHUNK_LEN,
+            )
+        yield text[:split_at].rstrip()
+        text = text[split_at:].lstrip()
+    if text:
+        yield text
+
+
+def _synthesize(text, audio_path, kwargs, seed, speed):
+    if len(text) > MAX_TEXT_LEN:
+        raise ValueError(f"Too long ({len(text)}/{MAX_TEXT_LEN}).")
+    text = text.strip()
+    if not text:
+        raise ValueError("Enter text.")
+
+    if audio_path:
+        kwargs = {**kwargs, "audio_prompt_path": audio_path}
+
+    wavs = []
+    with _model_lock:
+        for index, chunk in enumerate(_split_text(text), start=1):
+            base_seed = int(seed or 0)
+            for attempt in range(3):
+                _set_seed(base_seed + attempt if base_seed > 0 else 0)
+                wav = model.generate(chunk, **kwargs).detach().cpu()
+                maybe_empty_cache()
+                if not _has_excessive_silence(wav, model.sr):
+                    wavs.append(wav)
+                    break
+            else:
+                raise ValueError(
+                    f"Audio chunk {index} remained silent or had a long gap "
+                    f"after three attempts. Text starts: {chunk[:80]!r}"
+                )
+
+    wav = wavs[0] if len(wavs) == 1 else torch.cat(wavs, dim=-1)
+    return change_speed(wav, model.sr, speed)
+
+
+def _has_excessive_silence(wav, sample_rate):
+    if wav.numel() == 0 or not torch.isfinite(wav).all():
+        return True
+
+    # Measure peaks in 100 ms windows. A fully quiet chunk or 2 seconds of
+    # consecutive windows below -50 dBFS indicates a synthesis failure.
+    window_size = sample_rate // 10
+    peaks = torch.nn.functional.max_pool1d(
+        wav.abs().unsqueeze(0), window_size, ceil_mode=True
+    ).amax(dim=1).squeeze(0)
+    loud_windows = (peaks >= 10 ** (-50 / 20)).nonzero(as_tuple=True)[0]
+    if loud_windows.numel() == 0:
+        return True
+    boundaries = torch.cat(
+        (loud_windows.new_tensor([-1]), loud_windows, loud_windows.new_tensor([peaks.numel()]))
+    )
+    return bool((boundaries.diff() > 20).any())
 
 def _build_kwargs(
     row, exaggeration, cfg_weight, temperature, min_p, top_p, repetition_penalty
@@ -75,7 +165,6 @@ def generate(
             audio_path = saved
 
     try:
-        _set_seed(int(seed) if seed else 0)
         kwargs = dict(
             exaggeration=exaggeration,
             cfg_weight=cfg_weight,
@@ -84,20 +173,14 @@ def generate(
             top_p=top_p,
             repetition_penalty=repetition_penalty,
         )
-        wav = (
-            model.generate(text, audio_prompt_path=audio_path, **kwargs)
-            if audio_path
-            else model.generate(text, **kwargs)
-        )
-        wav = change_speed(wav, model.sr, speed)
-        maybe_empty_cache()
+        wav = _synthesize(text, audio_path, kwargs, seed, speed)
         return (
             True,
             save_wav(wav, model.sr, project_dir(name)),
             "✅ Done!",
             get_hw_stats(),
         )
-    except (RuntimeError, OSError) as e:
+    except (RuntimeError, OSError, ValueError) as e:
         return True, None, f"❌ {e}", get_hw_stats()
 
 def add_line(state, voice, text, exag, cfg, temp, seed, min_p, top_p, rep_pen):
@@ -237,14 +320,8 @@ def _gen_one_row(row, exag, cfg, temp, speed, min_p, top_p, rep_pen, seed, folde
     audio_path = load_voice_audio(row["voice"])
     kwargs = _build_kwargs(row, exag, cfg, temp, min_p, top_p, rep_pen)
     row_seed = _get_row_seed(row, seed)
-    _set_seed(int(row_seed) if row_seed else 0)
-
-    wav = (
-        model.generate(row["text"], audio_prompt_path=audio_path, **kwargs)
-        if audio_path
-        else model.generate(row["text"], **kwargs)
-    )
-    return save_wav(change_speed(wav, model.sr, speed), model.sr, folder)
+    wav = _synthesize(row["text"], audio_path, kwargs, row_seed, speed)
+    return save_wav(wav, model.sr, folder)
 
 def _require_project(proj_name):
     pn = proj_name.strip() if proj_name else ""
@@ -303,7 +380,6 @@ def generate_line(
         _delete_wav(old_path)
         new_state = [dict(r) for r in state]
         new_state[idx]["path"] = path
-        maybe_empty_cache()
         auto_save_project(new_state, proj_name)
         return (
             True,
@@ -313,7 +389,7 @@ def generate_line(
             f"✅ Line {idx+1} done.",
             get_hw_stats(),
         )
-    except (RuntimeError, OSError) as e:
+    except (RuntimeError, OSError, ValueError) as e:
         return True, state, render_table(state), None, f"❌ {e}", get_hw_stats()
 
 def regenerate_line(
@@ -385,8 +461,7 @@ def generate_all(
             )
             new_state[i]["path"] = path
             times.append(time.time() - t0)
-            maybe_empty_cache()
-        except (RuntimeError, OSError) as e:
+        except (RuntimeError, OSError, ValueError) as e:
             errs.append(f"Line {i+1}: {e}")
             continue
 

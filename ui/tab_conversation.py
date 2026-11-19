@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QColor
 
-from config import OUTPUTS_DIR
+from config import MAX_TEXT_LEN, OUTPUTS_DIR
 from voice_manager import get_saved_voices
 from ui.components import CustomAudioPlayer, SettingsDialog, GenerationProgressBar
 from ui.workers import ConversationWorker
@@ -501,6 +501,14 @@ class ConversationUI(QWidget):
         voice = self.conv_voice_combo.currentText()
         text = self.conv_text_input.toPlainText().strip()
         if not text:
+            return
+        if len(text) > MAX_TEXT_LEN:
+            self.status_lbl.setText(
+                f"Text is too long ({len(text)}/{MAX_TEXT_LEN} characters)."
+            )
+            self.status_lbl.setStyleSheet(
+                "color: #F1594F; font-size: 11px; font-weight: bold;"
+            )
             return
 
         if self.editing_index is not None:
